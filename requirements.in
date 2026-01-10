@@ -1,0 +1,5 @@
+bleak
+# asyncio
+tqdm
+pandas
+sqlite3
