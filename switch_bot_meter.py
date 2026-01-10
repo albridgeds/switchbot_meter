@@ -1,15 +1,17 @@
 import struct
-import time
 import asyncio
 from bleak import BleakClient
 from tqdm import tqdm
+from datetime import datetime
+import pandas as pd
+from bleak.exc import BleakError
 
 
 # The API endpoint
-url = "https://api.switch-bot.com"
-service_code = "CBA20D00-224D-11E6-9FB8-0002A5D5C51B"
-write_code = "CBA20002-224D-11E6-9FB8-0002A5D5C51B"
-read_code = "CBA20003-224D-11E6-9FB8-0002A5D5C51B"
+# URL = "https://api.switch-bot.com"
+SERVICE_CODE = "CBA20D00-224D-11E6-9FB8-0002A5D5C51B"
+WRITE_CODE = "CBA20002-224D-11E6-9FB8-0002A5D5C51B"
+READ_CODE = "CBA20003-224D-11E6-9FB8-0002A5D5C51B"
 
 
 status_code = {
@@ -31,22 +33,29 @@ status_code = {
 DEVICE_SLEEP = 0.5
 COMMAND_SLEEP = 0.01
 RECONNECT_SLEEP = 1
-CONNECT_ATTEMPT = 5
+CONNECT_ATTEMPT = 10
 STARTNOTIFY_TIMEOUT = 10.0
 GETDATA_TIMEOUT = 5.0
+
+# STORAGE_ID = [0x03]
 
 COMMAND_STATUS = [0x57, 0x02]
 COMMAND_CURRENT_READINGS = [0x57, 0x0f, 0x31]
 COMMAND_3A = [0x57, 0x0f, 0x3a]
-COMMAND_3B = [0x57, 0x0f, 0x3b, 0x00]
-COMMAND_3C = [0x57, 0x0f, 0x3c, 0x00]
+COMMAND_3B = [0x57, 0x0f, 0x3b]
+COMMAND_3C = [0x57, 0x0f, 0x3c]
 
-# commands = {
-#     "3C": {
-#         "base": [0x57, 0x0f, 0x3c, 0x00],
-#         "parser": self._parse_3c()
-#     },
-# }
+COMMANDS = {
+    "Status": [0x57, 0x02],
+    "Current": [0x57, 0x0f, 0x31],
+    "3A": [0x57, 0x0f, 0x3a],
+    "3B": [0x57, 0x0f, 0x3b],
+    "3C": [0x57, 0x0f, 0x3c],
+}
+
+
+def unix_timestamp_to_str(ts):
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class SwitchBotMeter:
@@ -56,59 +65,78 @@ class SwitchBotMeter:
         self.cur_status = 0
         self.cur_command = 0
         self.cur_timestamp = 0
-        self.memory_start = 0
-        self.memory_end = 0
+        self.memory_start_ts = 0
+        self.memory_end_ts = 0
         self.max_delta = 0
         self.readings = {}
         self.client = BleakClient(address)
 
-    def get_current_readings(self):
-        # status + temperature + battery
-        pass
+    async def read(self, start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
 
-    def read_from_memory(self, dt_start=None, dt_end=None):
-        asyncio.run(self._read_from_memory(dt_start, dt_end))
-        return self.readings
+        end_ts = int(end_dt.timestamp())
+        start_ts = int(start_dt.timestamp())
+
+        try:
+            await self._connect_meter()
+            await asyncio.wait_for(
+                self.client.start_notify(READ_CODE, self._collect),
+                timeout=STARTNOTIFY_TIMEOUT
+            )
+            storage = await self._find_storage(start_ts, end_ts)
+            if storage == -1:
+                return
+            await self._read_from_memory(storage)
+
+            # logger.debug("got data, closing")
+            print("got data, closing")
+            await self.client.stop_notify(READ_CODE)
+        except asyncio.TimeoutError as e:
+            # logger.error("timed out", e)
+            print('time out', e)
+        except Exception as e:
+            # logger.error(e)
+            print('error', e)
+        finally:
+            if self.client:
+                try:
+                    if self.client.is_connected:
+                        await self.client.disconnect()
+                except (EOFError, BleakError) as e:
+                    # Device/BlueZ already disconnected — safe to ignore
+                    print(f"disconnect ignored: {e}")
+
+        df_readings = pd.DataFrame(self.readings).T.reset_index().rename(columns={'index': 'timestamp'})
+        df_readings['timestamp'] = pd.to_datetime(df_readings['timestamp'], unit='s')
+        return df_readings
 
     @staticmethod
-    def _parce_31(packed):
-        # Get temperature and related characteristics
-        res = packed[0]
-        temperature = (packed[2] & 0b01111111) + (
-            (packed[1] & 0b00001111) / 10
-        )  # Absolute value of temp
-        if not (packed[2] & 0b10000000):  # Is temp negative?
+    def _parse_31(resp):
+        temperature = (resp[1] & 0b01111111) + ((resp[0] & 0b00001111) / 10)  # Absolute value of temp
+        if not (resp[1] & 0b10000000):  # Is temp negative?
+            print("negative temperature")
             temperature = -temperature
-        if not (packed[3] & 0b10000000):  # C or F?
+        if not (resp[2] & 0b10000000):  # C or F?
             temp_scale = "C"
         else:
             temp_scale = "F"
-            temperature = round(
-                temperature * 1.8 + 32, 1
-            )  # Convert to F
-        # temperature2 = round(temperature * 1.8 + 32, 1)
+            temperature = round(temperature * 1.8 + 32, 1)  # Convert to F
         # Get other info
-        humidity = packed[3] & 0b01111111
-        print(res, temperature, temp_scale, humidity)
+        humidity = resp[2] & 0b01111111
+        print("31 response:", temperature, temp_scale, humidity)
 
     def _parse_3b(self, resp):
-        self.memory_start, self.memory_end, self.max_delta, _ = struct.unpack(">IIHH", resp)
-        # print(timestamp_start, timestamp_end, max_delta)
-        # return timestamp_start, timestamp_end, max_delta
+        self.memory_start_ts, self.memory_end_ts, self.max_delta, _ = struct.unpack(">IIHH", resp)
+        # print(self.memory_start, self.memory_end, self.max_delta, tmp)
 
     def _parse_3c(self, resp):
-        # readings = []
         for iter_num, ind in enumerate(range(0, len(resp), 5)):
-            # print(ind, iter_num)
-            unix_time = self.memory_start + (self.cur_timestamp + iter_num * 2) * 120
+            unix_time = self.memory_start_ts + (self.cur_timestamp + iter_num * 2) * 120
             temperature = (resp[ind+3] & 0b01111111) + (resp[ind+2] & 0b00001111) / 10
             humidity = resp[ind+4] & 0b01111111
             temp_negative = (resp[ind+3] & 0b10000000)
             temp_scale_F = (resp[ind+4] & 0b10000000)
-            # readings.append({'t': temperature, 'h': humidity})
             self.readings[unix_time] = {'temp': temperature, 'humidity': humidity}
-            # print(i, temperature, humidity, temp_negative, temp_scale_F)
-        # return readings
+            # print(iter_num, temperature, humidity, temp_negative, temp_scale_F)
 
     async def _connect_meter(self):
         for i in range(0, CONNECT_ATTEMPT):
@@ -128,8 +156,7 @@ class SwitchBotMeter:
 
     def _collect(self, sender, data):
         # print('sender', sender)
-        # print("\nresponse:", "{0}".format(data.hex()))
-        # print("response:", " ".join([hex(x) for x in data]))
+        # print(self.cur_command, "response:", " ".join([hex(x) for x in data]))
 
         status_byte = data[0]
         self.cur_status = status_byte
@@ -137,15 +164,11 @@ class SwitchBotMeter:
             print('status', status_byte, status_code[status_byte])
             return
 
-        if self.cur_command == "3c":
+        if self.cur_command == "31":
+             self._parse_31(data[1:])
+        elif self.cur_command == "3c":
             self._parse_3c(data[1:])
-            # payload = self._parse_3c(data[1:])
-            # for i in range(len(payload)):
-            #     unix_time = self.memory_start + (self.cur_timestamp + i * 2) * 120
-            #     self.readings[unix_time] = payload[i]
-
         elif self.cur_command == "3b":
-            # self.memory_start, self.memory_end, self.max_delta = self._parse_3b(data[1:])
             self._parse_3b(data[1:])
         else:
             print("unknown message type", self.cur_command)
@@ -153,75 +176,47 @@ class SwitchBotMeter:
         # loop.call_soon_threadsafe(dataReceived.set_result, payload)
 
     async def _send_command_and_wait_for_response(self, command, command_id):
-        # print("command:", "".join('{:02x} '.format(x) for x in command))
+        # print("sending command:", "".join('{:02x} '.format(x) for x in command))
         self.cur_command = command_id
         self.cur_status = 0
-        await self.client.write_gatt_char(write_code, bytearray(command), response=True)
+        await self.client.write_gatt_char(WRITE_CODE, bytearray(command), response=True)
         while True:
             await asyncio.sleep(COMMAND_SLEEP)
             if self.cur_status != 0:
                 break
-            # print('waiting...')
 
-    async def _read_from_memory(self, dt_start=None, dt_end=None):
+    async def _find_storage(self, start_ts: int = None, end_ts: int = None):
 
-        try:
-            # loop = asyncio.get_event_loop()
-            # dataReceived = loop.create_future()
+        for storage in range(5):
+            command = COMMAND_3B + [storage]
+            print(f'Checking storage #{storage}')
+            await self._send_command_and_wait_for_response(command, '3b')
 
-            # set connection
-            await self._connect_meter()
-            # get and parse the response
-            await asyncio.wait_for(self.client.start_notify(read_code, self._collect),
-                                   timeout=STARTNOTIFY_TIMEOUT)
+            print(f"Available interval: {unix_timestamp_to_str(self.memory_start_ts)} - {unix_timestamp_to_str(self.memory_end_ts)}")
+            if self.memory_start_ts < start_ts < self.memory_end_ts:
+                self.start_ts = max(start_ts, self.memory_start_ts) if start_ts else self.memory_start_ts
+                self.end_ts = min(end_ts, self.memory_end_ts) if end_ts else self.memory_end_ts
+                return storage
 
-            # get the timestamps of the first and the last available readings
-            await self._send_command_and_wait_for_response(COMMAND_3B, '3b')
-            # print('3b response:', self.memory_start, self.memory_end, self.max_delta)
-            memory_start = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(self.memory_start))
-            memory_end = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(self.memory_end))
-            print(f"available interval: {memory_start} - {memory_end}")
+        print("storage not found")
+        return -1
 
-            if dt_start is not None or dt_end is not None:
-                print(f"input interval:     {dt_start} - {dt_end}")
-                dt_start = int(time.mktime(time.strptime(dt_start, "%Y-%m-%d %H:%M:%S")))
-                dt_end = int(time.mktime(time.strptime(dt_end, "%Y-%m-%d %H:%M:%S")))
+    async def _read_from_memory(self, storage):
 
-            # fix the input
-            dt_start_fixed_unix = max(dt_start, self.memory_start) if dt_start is not None else self.memory_start
-            dt_end_fixed_unix = min(dt_end, self.memory_end) if dt_end is not None else self.memory_end
-            dt_start_fixed = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(dt_start_fixed_unix))
-            dt_end_fixed = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(dt_end_fixed_unix))
-            print(f"requested interval: {dt_start_fixed} - {dt_end_fixed}")
+        print(f"Request interval ({unix_timestamp_to_str(self.start_ts)} - {unix_timestamp_to_str(self.end_ts)}) from storage #{storage}")
 
-            # calculate deltas
-            delta_start = int(((dt_start_fixed_unix - self.memory_start) / 120) // 6) * 6
-            # delta_start = int(delta_start // 6) * 6
-            # delta_end = (dt_end - self.memory_start) / 120
-            # delta_end = int(delta_end // 6) * 6
-            delta_end = int(((dt_end_fixed_unix - self.memory_start) / 120) // 6) * 6
-            print('deltas:', delta_start, delta_end)
-            print()
+        # calculate deltas between available and requested data
+        delta_start = int(((self.start_ts - self.memory_start_ts) / 120) // 6) * 6
+        delta_end = int(((self.end_ts - self.memory_start_ts) / 120) // 6) * 6
+        print('deltas:', delta_start, delta_end)
 
-            for delta in tqdm(range(delta_start, delta_end, 6)):
-                if delta > self.max_delta:
-                    break
-                # num_byte = [0x04] if self.max_delta - delta < 2 else [0x06]
-                num_byte = [0x06]
+        for delta in tqdm(range(delta_start, delta_end, 6)):
+            if delta > self.max_delta:
+                break
+            # num_byte = [0x04] if self.max_delta - delta < 2 else [0x06]
+            num_byte = [0x06]
 
-                self.cur_timestamp = delta
-                dt_bytes = [x for x in struct.pack(">H", delta)]
-                command = COMMAND_3C + dt_bytes + num_byte
-                await self._send_command_and_wait_for_response(command, '3c')
-
-            # logger.debug("got data, closing")
-            print("got data, closing")
-            await self.client.stop_notify(read_code)
-        except asyncio.TimeoutError as e:
-            # logger.error("timed out", e)
-            print('time out', e)
-        except Exception as e:
-            # logger.error(e)
-            print('error', e)
-        finally:
-            await self.client.disconnect()
+            self.cur_timestamp = delta
+            dt_bytes = [x for x in struct.pack(">H", delta)]
+            command = COMMAND_3C + [storage] + dt_bytes + num_byte
+            await self._send_command_and_wait_for_response(command, '3c')
