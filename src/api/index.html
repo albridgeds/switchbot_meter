@@ -1,28 +1,87 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sensor Dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1"></script>
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    .chart-container { width: 100%; max-width: 1000px; margin-bottom: 40px; }
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background-color: #f5f5f5;
+    }
+    .controls {
+      background: white;
+      padding: 15px;
+      border-radius: 5px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .controls label {
+      font-weight: bold;
+      margin-right: 5px;
+    }
+    .controls input {
+      margin-right: 15px;
+    }
+    .controls button {
+      padding: 5px 15px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .controls button:hover {
+      background-color: #0056b3;
+    }
+    .chart-container {
+      width: 100%;
+      max-width: 1200px;
+      margin-bottom: 40px;
+      background: white;
+      padding: 20px;
+      border-radius: 5px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    h2 {
+      margin-top: 0;
+      color: #333;
+    }
   </style>
 </head>
 <body>
-  <h3>
-    Period (days):
+  <div class="controls">
+    <label for="days-input">Period (days):</label>
     <input id="days-input" type="number" min="1" value="10" style="width:80px"/>
-    End:
+    <label for="end-input">End:</label>
     <input id="end-input" type="datetime-local" style="width:220px"/>
     <button id="apply-btn">Apply</button>
-  </h3>
-  <h2>Temperature</h2>
-  <div class="chart-container"><canvas id="chart-temp"></canvas></div>
-  <h2>Humidity</h2>
-  <div class="chart-container"><canvas id="chart-hum"></canvas></div>
+  </div>
+
+  <div class="chart-container">
+    <h2>Temperature (°C)</h2>
+    <canvas id="chart-temp"></canvas>
+  </div>
+
+  <div class="chart-container">
+    <h2>Humidity (%)</h2>
+    <canvas id="chart-hum"></canvas>
+  </div>
 
   <script>
+    // Constants
+    const DEFAULT_DAYS = 10;
+    const DEBUG = false; // Set to true for debug logging
+
+    // Debug logging helper
+    function log(...args) {
+      if (DEBUG) console.log(...args);
+    }
+
     // Wait for DOM and libraries to be ready
     function init() {
       // Ensure luxon is loaded
@@ -33,196 +92,197 @@
 
       const { DateTime } = luxon;
 
-      function pad(n){ return n.toString().padStart(2, '0'); }
-      function formatDate(d){
-        return d.getFullYear()
-          + '-' + pad(d.getMonth() + 1)
-          + '-' + pad(d.getDate())
-          + ' ' + pad(d.getHours())
-          + ':' + pad(d.getMinutes())
-          + ':' + pad(d.getSeconds());
+      // Color palette for sensors
+      const COLORS = [
+        'rgba(54,162,235,1)', 'rgba(255,99,132,1)', 'rgba(255,159,64,1)',
+        'rgba(255,205,86,1)', 'rgba(75,192,192,1)', 'rgba(153,102,255,1)',
+        'rgba(201,203,207,1)'
+      ];
+
+      function colorForIndex(i) {
+        return COLORS[i % COLORS.length];
       }
 
-      // simple color generator
-      function colorForIndex(i){
-        const palette = [
-          'rgba(54,162,235,1)', 'rgba(255,99,132,1)', 'rgba(255,159,64,1)',
-          'rgba(255,205,86,1)', 'rgba(75,192,192,1)', 'rgba(153,102,255,1)',
-          'rgba(201,203,207,1)'
-        ];
-        return palette[i % palette.length];
-      }
+      function chooseTimeUnit(sortedTs) {
+        if (!sortedTs.length) return 'day';
 
-      function chooseTimeUnit(sortedTs){
-        if(!sortedTs.length) return 'day';
         const deltas = [];
-        for(let i=1;i<sortedTs.length;i++) deltas.push(sortedTs[i]-sortedTs[i-1]);
-        if(!deltas.length) return 'minute';
-        deltas.sort((a,b)=>a-b);
-        const mid = Math.floor(deltas.length/2);
-        const median = deltas.length%2 ? deltas[mid] : Math.floor((deltas[mid-1]+deltas[mid])/2);
-        if(median >= 86400) return 'day';
-        if(median >= 3600) return 'hour';
-        if(median >= 60) return 'minute';
+        for (let i = 1; i < sortedTs.length; i++) {
+          deltas.push(sortedTs[i] - sortedTs[i - 1]);
+        }
+
+        if (!deltas.length) return 'minute';
+
+        deltas.sort((a, b) => a - b);
+        const mid = Math.floor(deltas.length / 2);
+        const median = deltas.length % 2 ? deltas[mid] : Math.floor((deltas[mid - 1] + deltas[mid]) / 2);
+
+        if (median >= 86400) return 'day';
+        if (median >= 3600) return 'hour';
+        if (median >= 60) return 'minute';
         return 'second';
       }
 
-      function createCharts(allTsSorted, tempDatasets, humDatasets){
-        // pick unit based on median delta across allTsSorted
-        const unit = chooseTimeUnit(allTsSorted);
+      function createChart(canvasId, datasets, yAxisLabel) {
+        const unit = chooseTimeUnit(
+          Array.from(new Set(datasets.flatMap(ds => ds.data.map(p => p.x / 1000)))).sort((a, b) => a - b)
+        );
 
-        // destroy existing charts if present
-        if(window._chartTemp){ window._chartTemp.destroy(); }
-        if(window._chartHum){ window._chartHum.destroy(); }
+        const chartKey = `_chart_${canvasId}`;
+        if (window[chartKey]) {
+          window[chartKey].destroy();
+        }
 
-        const ctxT = document.getElementById('chart-temp').getContext('2d');
-        window._chartTemp = new Chart(ctxT, {
+        const ctx = document.getElementById(canvasId).getContext('2d');
+        window[chartKey] = new Chart(ctx, {
           type: 'line',
-          data: { datasets: tempDatasets },
+          data: { datasets },
           options: {
             responsive: true,
             interaction: { mode: 'index', intersect: false },
-            stacked: false,
-            plugins: { title: { display: false } },
+            plugins: {
+              title: { display: false },
+              legend: { display: true, position: 'top' }
+            },
             scales: {
               x: {
                 type: 'time',
-                time: { unit: unit, tooltipFormat: "yyyy-MM-dd HH:mm:ss",
-                        displayFormats: { second: 'yyyy-MM-dd HH:mm:ss', minute: 'yyyy-MM-dd HH:mm:ss', hour: 'yyyy-MM-dd HH:mm:ss', day: 'yyyy-MM-dd HH:mm:ss' } },
+                time: {
+                  unit: unit,
+                  tooltipFormat: 'yyyy-MM-dd HH:mm:ss',
+                  displayFormats: {
+                    second: 'yyyy-MM-dd HH:mm:ss',
+                    minute: 'yyyy-MM-dd HH:mm:ss',
+                    hour: 'yyyy-MM-dd HH:mm:ss',
+                    day: 'yyyy-MM-dd HH:mm:ss'
+                  }
+                },
                 adapters: { date: { zone: 'utc' } },
-                ticks: { maxRotation:45, autoSkip:true, maxTicksLimit: 10 }
+                ticks: { maxRotation: 45, autoSkip: true, maxTicksLimit: 10 }
               },
-              y: { display: true, title: { display: true, text: 'Temperature' } }
-            }
-          }
-        });
-
-        const ctxH = document.getElementById('chart-hum').getContext('2d');
-        window._chartHum = new Chart(ctxH, {
-          type: 'line',
-          data: { datasets: humDatasets },
-          options: {
-            responsive: true,
-            interaction: { mode: 'index', intersect: false },
-            stacked: false,
-            plugins: { title: { display: false } },
-            scales: {
-              x: {
-                type: 'time',
-                time: { unit: unit, tooltipFormat: "yyyy-MM-dd HH:mm:ss",
-                        displayFormats: { second: 'yyyy-MM-dd HH:mm:ss', minute: 'yyyy-MM-dd HH:mm:ss', hour: 'yyyy-MM-dd HH:mm:ss', day: 'yyyy-MM-dd HH:mm:ss' } },
-                adapters: { date: { zone: 'utc' } },
-                ticks: { maxRotation:45, autoSkip:true, maxTicksLimit: 10 }
-              },
-              y: { display: true, title: { display: true, text: 'Humidity' } }
+              y: {
+                display: true,
+                title: { display: true, text: yAxisLabel }
+              }
             }
           }
         });
       }
 
-      function setDefaultEndNow(){
+      function setDefaultEndNow() {
         const input = document.getElementById('end-input');
-        if(!input) {
+        if (!input) {
           console.error('end-input element not found');
           return;
         }
 
-        // Если пользователь уже задал значение (например, браузер восстановил форму) — не трогаем.
-        if(input.value && input.value.trim().length > 0) {
-          console.log('End input already has value:', input.value);
+        if (input.value && input.value.trim().length > 0) {
+          log('End input already has value:', input.value);
           return;
         }
 
         const nowLocal = DateTime.local().set({ second: 0, millisecond: 0 });
-        // datetime-local expects yyyy-MM-ddTHH:mm
         input.value = nowLocal.toFormat("yyyy-LL-dd'T'HH:mm");
-        console.log('Set default end time:', input.value);
+        log('Set default end time:', input.value);
       }
 
-      function getEndUnixFromInput(){
+      function getEndUnixFromInput() {
         const input = document.getElementById('end-input');
         const v = input ? input.value : '';
-        if(!v) {
+        if (!v) {
           console.warn('End input is empty');
           return null;
         }
         const dt = DateTime.fromISO(v);
-        if(!dt.isValid) {
+        if (!dt.isValid) {
           console.warn('Invalid datetime in end input:', v);
           return null;
         }
         return Math.floor(dt.toSeconds());
       }
 
-      function loadAndRender(days){
-        console.log('loadAndRender called with days:', days);
+      function loadAndRender(days) {
+        log('loadAndRender called with days:', days);
 
-        // Гарантируем, что end задан.
         setDefaultEndNow();
 
         let endUnix = getEndUnixFromInput();
-        if(endUnix === null){
-          // Последняя страховка, если поле пустое/некорректное
+        if (endUnix === null) {
           endUnix = Math.floor(DateTime.local().toSeconds());
-          console.log('Using fallback end time:', endUnix);
+          log('Using fallback end time:', endUnix);
         }
 
         const url = new URL('/api/readings', window.location.origin);
         url.searchParams.set('days', String(days));
         url.searchParams.set('end', String(endUnix));
 
-        console.log('Fetching:', url.toString());
+        log('Fetching:', url.toString());
 
         fetch(url.toString())
           .then(r => r.json())
           .then(sensors => {
-            console.log('Received sensors:', Object.keys(sensors), 'total points:', Object.values(sensors).reduce((sum, pts) => sum + pts.length, 0));
+            const totalPoints = Object.values(sensors).reduce((sum, pts) => sum + pts.length, 0);
+            log('Received sensors:', Object.keys(sensors), 'total points:', totalPoints);
 
             const sensorNames = Object.keys(sensors);
-
-            // prepare datasets: for time scale, provide {x: ms, y: value}
             const tempDatasets = [];
             const humDatasets = [];
-            const allTimestamps = new Set();
 
-            sensorNames.forEach((name, idx)=>{
+            sensorNames.forEach((name, idx) => {
               const pts = sensors[name] || [];
-              const tempData = pts.map(p=>{ allTimestamps.add(p.t); return { x: p.t*1000, y: p.temp }; });
-              const humData = pts.map(p=>{ allTimestamps.add(p.t); return { x: p.t*1000, y: p.hum }; });
+              const color = colorForIndex(idx);
 
-              tempDatasets.push({ label: name, data: tempData, borderColor: colorForIndex(idx), backgroundColor: colorForIndex(idx), spanGaps: false, tension:0.1, showLine:true });
-              humDatasets.push({ label: name, data: humData, borderColor: colorForIndex(idx), backgroundColor: colorForIndex(idx), spanGaps: false, tension:0.1, showLine:true });
+              const tempData = pts.map(p => ({ x: p.t * 1000, y: p.temp }));
+              const humData = pts.map(p => ({ x: p.t * 1000, y: p.hum }));
+
+              tempDatasets.push({
+                label: name,
+                data: tempData,
+                borderColor: color,
+                backgroundColor: color,
+                spanGaps: false,
+                tension: 0.1,
+                showLine: true
+              });
+
+              humDatasets.push({
+                label: name,
+                data: humData,
+                borderColor: color,
+                backgroundColor: color,
+                spanGaps: false,
+                tension: 0.1,
+                showLine: true
+              });
             });
 
-            const sortedTs = Array.from(allTimestamps).sort((a,b)=>a-b);
-            console.log('Creating charts with', sortedTs.length, 'unique timestamps');
-            createCharts(sortedTs, tempDatasets, humDatasets);
+            log('Creating charts');
+            createChart('chart-temp', tempDatasets, 'Temperature (°C)');
+            createChart('chart-hum', humDatasets, 'Humidity (%)');
           })
           .catch(err => console.error('Fetch error:', err));
       }
 
       const applyBtn = document.getElementById('apply-btn');
       if (applyBtn) {
-        applyBtn.addEventListener('click', ()=>{
-          const days = document.getElementById('days-input').value || 10;
+        applyBtn.addEventListener('click', () => {
+          const days = parseInt(document.getElementById('days-input').value) || DEFAULT_DAYS;
           loadAndRender(days);
         });
       }
 
-      // initial render
-      console.log('Starting initial render');
+      // Initial render
+      log('Starting initial render');
       setDefaultEndNow();
-      loadAndRender(10);
+      loadAndRender(DEFAULT_DAYS);
     }
 
     // Wait for DOM to be ready
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', init);
     } else {
-      // DOM already loaded
       init();
     }
-
   </script>
 </body>
 </html>

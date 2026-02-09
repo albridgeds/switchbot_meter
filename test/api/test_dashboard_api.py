@@ -34,19 +34,9 @@ def test_readings_default_days(monkeypatch, tmp_path, client):
     ]
     create_db(str(db_path), rows)
 
-    # monkeypatch project root resolution so module looks into tmp_path as project root
+    # monkeypatch DATA_DIR directly
     import src.api.dashboard_api as mod
-    class DummyResolve:
-        def __init__(self, path):
-            self._path = path
-        def resolve(self):
-            class R:
-                pass
-            r = R()
-            # parents[2] should be tmp_path
-            r.parents = [None, None, tmp_path]
-            return r
-    monkeypatch.setattr(mod, 'Path', DummyResolve)
+    monkeypatch.setattr(mod, 'DATA_DIR', data_dir)
 
     resp = client.get('/api/readings')
     assert resp.status_code == 200
@@ -71,17 +61,9 @@ def test_readings_days_filter(monkeypatch, tmp_path, client):
     ]
     create_db(str(db_path), rows)
 
+    # monkeypatch DATA_DIR directly
     import src.api.dashboard_api as mod
-    class DummyResolve:
-        def __init__(self, path):
-            self._path = path
-        def resolve(self):
-            class R:
-                pass
-            r = R()
-            r.parents = [None, None, tmp_path]
-            return r
-    monkeypatch.setattr(mod, 'Path', DummyResolve)
+    monkeypatch.setattr(mod, 'DATA_DIR', data_dir)
 
     # days=1 -> only recent row across sensors
     resp = client.get('/api/readings?days=1')
