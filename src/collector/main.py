@@ -3,9 +3,9 @@ import asyncio
 import pandas as pd
 from datetime import datetime, timedelta
 
-import config
-from switch_bot_meter import SwitchBotMeter
-from db_sqlite import SqlLite
+from src import config
+from src.collector.switch_bot_meter import SwitchBotMeter
+from src.common.db_sqlite import SqlLite
 # from db_postgres import Postgres
 from test.meter_data import METER_READINGS
 
@@ -27,8 +27,9 @@ def convert_app_export(df_export):
 
 async def main(dt: str, duration: int, use_test_data: bool, rewrite: bool, room: str):
 
-    end_dt = datetime.fromisoformat(dt) if dt else datetime.now()
-    start_dt = end_dt - timedelta(minutes=duration)
+    end_dt = datetime.fromisoformat(dt) if dt else datetime.now()  # default current moment
+    duration = duration if duration else 10 * 365 * 24  # default 10 years (infinite period)
+    start_dt = end_dt - timedelta(hours=duration)
     print(start_dt, end_dt)
 
     for room_name, bl_mac in config.BL_MACS.items():
@@ -96,7 +97,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--dt", type=str, help="Reference date/datetime, ISO format: %Y-%m-%d (%H:%M:%S)")
-    parser.add_argument("--duration", type=int, default=1440, help="Reading period, minutes")
+    parser.add_argument("--duration", type=int, help="Reading period, hours")
     parser.add_argument("--use_test_data", action="store_true", default=False, help="Use test data instead of real sensors")
     parser.add_argument("--rewrite", action="store_true", default=False, help="Rewrite existing database records with the sensor data")
     parser.add_argument("--room", type=str, help="To request a single room only")

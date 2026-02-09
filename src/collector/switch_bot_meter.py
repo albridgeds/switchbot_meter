@@ -193,7 +193,10 @@ class SwitchBotMeter:
             await self._send_command_and_wait_for_response(command, '3b')
 
             print(f"Available interval: {unix_timestamp_to_str(self.memory_start_ts)} - {unix_timestamp_to_str(self.memory_end_ts)}")
-            if self.memory_start_ts < start_ts < self.memory_end_ts:
+            if self.memory_start_ts == self.memory_end_ts:
+                continue
+
+            if (start_ts < self.memory_end_ts) or (end_ts > self.memory_start_ts):
                 self.start_ts = max(start_ts, self.memory_start_ts) if start_ts else self.memory_start_ts
                 self.end_ts = min(end_ts, self.memory_end_ts) if end_ts else self.memory_end_ts
                 return storage
