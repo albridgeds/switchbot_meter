@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iot-monitor"
+version = "0.1.0"
+description = "Local IoT monitoring service for Raspberry Pi (SwitchBot, SQLite, FastAPI)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+authors = [
+  { name = "Aleksei Rodchenko", email = "rodchenkoaleksei@gmail.com" }
+]
+
+dependencies = [
+  # --- Core ---
+  "pydantic>=2.5",
+  "PyYAML>=6.0",
+
+  # --- Collector ---
+  "bleak>=0.21",
+  "tqdm>=4.66",
+
+  # --- API ---
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+
+
+  # --- Data ---
+  "pandas>=2.0",
+
+  # --- Utils ---
+  "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.3",
+  "black>=24.0",
+  "mypy>=1.8",
+  "httpx",
+]
+
+[project.scripts]
+iot-collector = "iot_monitor.collector.main:main"
+iot-api = "iot_monitor.api.main:run"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# --------------------
+# Formatting & linting
+# --------------------
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
