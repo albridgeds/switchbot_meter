@@ -3,7 +3,7 @@ import os
 import pandas as pd
 
 
-DB_DIR = os.path.join(os.path.dirname(__file__), "data")
+DB_DIR = os.path.join(os.path.dirname(__file__), "../../data")
 os.makedirs(DB_DIR, exist_ok=True)
 
 

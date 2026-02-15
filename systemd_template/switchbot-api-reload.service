@@ -1,0 +1,23 @@
+[Unit]
+Description=SwitchBot dashboard API (FastAPI/Uvicorn, autoreload for dev)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/home/user/workspace/sensors
+Environment=PYTHONUNBUFFERED=1
+
+# Development-only unit: --reload is convenient but heavier and not recommended for production.
+# Bind to 0.0.0.0 to make it reachable from your LAN.
+ExecStart=/home/user/workspace/sensors/venv/bin/uvicorn src.api.dashboard_api:app --host 0.0.0.0 --port 8000 --reload
+
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

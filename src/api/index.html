@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sensor Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background-color: #f5f5f5;
+    }
+    .controls {
+      background: white;
+      padding: 15px;
+      border-radius: 5px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .controls label {
+      font-weight: bold;
+      margin-right: 5px;
+    }
+    .controls input {
+      margin-right: 15px;
+    }
+    .controls button {
+      padding: 5px 15px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .controls button:hover {
+      background-color: #0056b3;
+    }
+    .chart-container {
+      width: 100%;
+      max-width: 1200px;
+      margin-bottom: 40px;
+      background: white;
+      padding: 20px;
+      border-radius: 5px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    h2 {
+      margin-top: 0;
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <label for="days-input">Period (days):</label>
+    <input id="days-input" type="number" min="1" value="10" style="width:80px"/>
+    <label for="end-input">End:</label>
+    <input id="end-input" type="datetime-local" style="width:220px"/>
+    <button id="apply-btn">Apply</button>
+  </div>
+
+  <div class="chart-container">
+    <h2>Temperature (°C)</h2>
+    <canvas id="chart-temp"></canvas>
+  </div>
+
+  <div class="chart-container">
+    <h2>Humidity (%)</h2>
+    <canvas id="chart-hum"></canvas>
+  </div>
+
+  <script>
+    // Constants
+    const DEFAULT_DAYS = 10;
+    const DEBUG = false; // Set to true for debug logging
+
+    // Debug logging helper
+    function log(...args) {
+      if (DEBUG) console.log(...args);
+    }
+
+    // Wait for DOM and libraries to be ready
+    function init() {
+      // Ensure luxon is loaded
+      if (typeof luxon === 'undefined' || !luxon.DateTime) {
+        console.error('Luxon library not loaded');
+        return;
+      }
+
+      const { DateTime } = luxon;
+
+      // Color palette for sensors
+      const COLORS = [
+        'rgba(54,162,235,1)', 'rgba(255,99,132,1)', 'rgba(255,159,64,1)',
+        'rgba(255,205,86,1)', 'rgba(75,192,192,1)', 'rgba(153,102,255,1)',
+        'rgba(201,203,207,1)'
+      ];
+
+      function colorForIndex(i) {
+        return COLORS[i % COLORS.length];
+      }
+
+      function chooseTimeUnit(sortedTs) {
+        if (!sortedTs.length) return 'day';
+
+        const deltas = [];
+        for (let i = 1; i < sortedTs.length; i++) {
+          deltas.push(sortedTs[i] - sortedTs[i - 1]);
+        }
+
+        if (!deltas.length) return 'minute';
+
+        deltas.sort((a, b) => a - b);
+        const mid = Math.floor(deltas.length / 2);
+        const median = deltas.length % 2 ? deltas[mid] : Math.floor((deltas[mid - 1] + deltas[mid]) / 2);
+
+        if (median >= 86400) return 'day';
+        if (median >= 3600) return 'hour';
+        if (median >= 60) return 'minute';
+        return 'second';
+      }
+
+      function createChart(canvasId, datasets, yAxisLabel) {
+        const unit = chooseTimeUnit(
+          Array.from(new Set(datasets.flatMap(ds => ds.data.map(p => p.x / 1000)))).sort((a, b) => a - b)
+        );
+
+        const chartKey = `_chart_${canvasId}`;
+        if (window[chartKey]) {
+          window[chartKey].destroy();
+        }
+
+        const ctx = document.getElementById(canvasId).getContext('2d');
+        window[chartKey] = new Chart(ctx, {
+          type: 'line',
+          data: { datasets },
+          options: {
+            responsive: true,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              title: { display: false },
+              legend: { display: true, position: 'top' }
+            },
+            scales: {
+              x: {
+                type: 'time',
+                time: {
+                  unit: unit,
+                  tooltipFormat: 'yyyy-MM-dd HH:mm:ss',
+                  displayFormats: {
+                    second: 'yyyy-MM-dd HH:mm:ss',
+                    minute: 'yyyy-MM-dd HH:mm:ss',
+                    hour: 'yyyy-MM-dd HH:mm:ss',
+                    day: 'yyyy-MM-dd HH:mm:ss'
+                  }
+                },
+                adapters: { date: { zone: 'utc' } },
+                ticks: { maxRotation: 45, autoSkip: true, maxTicksLimit: 10 }
+              },
+              y: {
+                display: true,
+                title: { display: true, text: yAxisLabel }
+              }
+            }
+          }
+        });
+      }
+
+      function setDefaultEndNow() {
+        const input = document.getElementById('end-input');
+        if (!input) {
+          console.error('end-input element not found');
+          return;
+        }
+
+        if (input.value && input.value.trim().length > 0) {
+          log('End input already has value:', input.value);
+          return;
+        }
+
+        const nowLocal = DateTime.local().set({ second: 0, millisecond: 0 });
+        input.value = nowLocal.toFormat("yyyy-LL-dd'T'HH:mm");
+        log('Set default end time:', input.value);
+      }
+
+      function getEndUnixFromInput() {
+        const input = document.getElementById('end-input');
+        const v = input ? input.value : '';
+        if (!v) {
+          console.warn('End input is empty');
+          return null;
+        }
+        const dt = DateTime.fromISO(v);
+        if (!dt.isValid) {
+          console.warn('Invalid datetime in end input:', v);
+          return null;
+        }
+        return Math.floor(dt.toSeconds());
+      }
+
+      function loadAndRender(days) {
+        log('loadAndRender called with days:', days);
+
+        setDefaultEndNow();
+
+        let endUnix = getEndUnixFromInput();
+        if (endUnix === null) {
+          endUnix = Math.floor(DateTime.local().toSeconds());
+          log('Using fallback end time:', endUnix);
+        }
+
+        const url = new URL('/api/readings', window.location.origin);
+        url.searchParams.set('days', String(days));
+        url.searchParams.set('end', String(endUnix));
+
+        log('Fetching:', url.toString());
+
+        fetch(url.toString())
+          .then(r => r.json())
+          .then(sensors => {
+            const totalPoints = Object.values(sensors).reduce((sum, pts) => sum + pts.length, 0);
+            log('Received sensors:', Object.keys(sensors), 'total points:', totalPoints);
+
+            const sensorNames = Object.keys(sensors);
+            const tempDatasets = [];
+            const humDatasets = [];
+
+            sensorNames.forEach((name, idx) => {
+              const pts = sensors[name] || [];
+              const color = colorForIndex(idx);
+
+              const tempData = pts.map(p => ({ x: p.t * 1000, y: p.temp }));
+              const humData = pts.map(p => ({ x: p.t * 1000, y: p.hum }));
+
+              tempDatasets.push({
+                label: name,
+                data: tempData,
+                borderColor: color,
+                backgroundColor: color,
+                spanGaps: false,
+                tension: 0.1,
+                showLine: true
+              });
+
+              humDatasets.push({
+                label: name,
+                data: humData,
+                borderColor: color,
+                backgroundColor: color,
+                spanGaps: false,
+                tension: 0.1,
+                showLine: true
+              });
+            });
+
+            log('Creating charts');
+            createChart('chart-temp', tempDatasets, 'Temperature (°C)');
+            createChart('chart-hum', humDatasets, 'Humidity (%)');
+          })
+          .catch(err => console.error('Fetch error:', err));
+      }
+
+      const applyBtn = document.getElementById('apply-btn');
+      if (applyBtn) {
+        applyBtn.addEventListener('click', () => {
+          const days = parseInt(document.getElementById('days-input').value) || DEFAULT_DAYS;
+          loadAndRender(days);
+        });
+      }
+
+      // Initial render
+      log('Starting initial render');
+      setDefaultEndNow();
+      loadAndRender(DEFAULT_DAYS);
+    }
+
+    // Wait for DOM to be ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  </script>
+</body>
+</html>
+
