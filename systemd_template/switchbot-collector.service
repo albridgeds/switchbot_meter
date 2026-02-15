@@ -1,0 +1,24 @@
+[Unit]
+Description=SwitchBot collector (daily snapshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# User that will run the collector process
+User=user
+
+# Project directory on Raspberry Pi
+WorkingDirectory=/home/user/workspace/sensors
+Environment=PYTHONUNBUFFERED=1
+
+# Run from the venv Python interpreter.
+# If your venv path or entry module differs, update the command below.
+ExecStart=/home/user/workspace/sensors/venv/bin/python -m src.collector.main
+
+# If collector writes to stdout/stderr, it will be available via journalctl
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
